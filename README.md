@@ -17,15 +17,15 @@ Server to remotely controlling Blender by executing commands in your blender pro
 
 ## Installation
 
-1. Install `addon.py`
-2. Run `sender.py`
+1. Run `kettleaddon.py` as a Python Script in Blender
+2. Run `kettle.py`
 
 ## Usage
 
 ### As a Module
 
 ```python
-from sender import BlenderCommandSender
+from kettle import BlenderCommandSender
 
 # Create a sender with default connection to localhost:9999
 sender = BlenderCommandSender()
@@ -51,7 +51,7 @@ sender.delete_all()
 Run the script directly to enter interactive mode:
 
 ```python
-python sender.py
+python kettle.py
 ```
 
 In interactive mode, you can type commands like:
