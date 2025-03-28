@@ -4,6 +4,7 @@ import threading
 import time
 import json
 import traceback
+import datetime
 
 class CommandExecutor:
     """Class to handle execution of commands received via socket"""
@@ -64,6 +65,152 @@ class CommandExecutor:
         return _execute_code
     
     @staticmethod
+    def create_text_block(params=None):
+        """Create a new text block in the Text Editor with the provided code"""
+        params = params or {}
+        code = params.get("code", "")
+        name = params.get("name", "")
+        execute = params.get("execute", False)
+        
+        def _create_text_block():
+            try:
+                # Generate a default name if none provided
+                if not name:
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    text_name = f"script_{timestamp}.py"
+                else:
+                    text_name = name
+                    
+                # Create a new text block
+                if text_name in bpy.data.texts:
+                    # If text already exists, clear it and reuse
+                    text = bpy.data.texts[text_name]
+                    text.clear()
+                else:
+                    # Create new text
+                    text = bpy.data.texts.new(text_name)
+                
+                # Set the content
+                text.write(code)
+                
+                # Make it the active text in the editor
+                for area in bpy.context.screen.areas:
+                    if area.type == 'TEXT_EDITOR':
+                        area.spaces.active.text = text
+                        break
+                        
+                # Save a copy of the execution status to report back
+                execution_status = "not requested"
+                        
+                if execute:
+                    # Execute the text block using the proper method
+                    # First, try to find a text editor area to use for context
+                    override = None
+                    for window in bpy.context.window_manager.windows:
+                        for area in window.screen.areas:
+                            if area.type == 'TEXT_EDITOR':
+                                for region in area.regions:
+                                    if region.type == 'WINDOW':
+                                        override = {
+                                            'window': window,
+                                            'screen': window.screen,
+                                            'area': area,
+                                            'region': region,
+                                            'space_data': area.spaces.active,
+                                            'edit_text': text
+                                        }
+                                        break
+                                if override:
+                                    break
+                        if override:
+                            break
+                    
+                    # If we found a text editor, use it to execute
+                    if override:
+                        # Set as active text
+                        override['space_data'].text = text
+                        # Use the override context to run the script
+                        bpy.ops.text.run_script(override)
+                        execution_status = "executed with override context"
+                    else:
+                        # Fallback method: execute the code directly
+                        try:
+                            namespace = {'__file__': text_name}
+                            exec(compile(code, text_name, 'exec'), namespace)
+                            execution_status = "executed directly with exec()"
+                        except Exception as exec_error:
+                            return f"Text block '{text_name}' created but execution failed: {str(exec_error)}"
+                    
+                    # Print confirmation to system console
+                    print(f"Script '{text_name}' {execution_status}")
+                    
+                    return f"Text block '{text_name}' created and {execution_status}"
+                else:
+                    return f"Text block '{text_name}' created (execution not requested)"
+                    
+            except Exception as e:
+                error_msg = traceback.format_exc()
+                return f"Error creating/executing text block: {error_msg}"
+        
+        return _create_text_block
+    
+    @staticmethod
+    def execute_text_block(params=None):
+        """Execute a text block by name"""
+        params = params or {}
+        name = params.get("name", "")
+        
+        def _execute_text_block():
+            try:
+                if not name or name not in bpy.data.texts:
+                    return f"Text block '{name}' not found"
+                    
+                text = bpy.data.texts[name]
+                
+                # Try to find a text editor area to use for context
+                override = None
+                for window in bpy.context.window_manager.windows:
+                    for area in window.screen.areas:
+                        if area.type == 'TEXT_EDITOR':
+                            for region in area.regions:
+                                if region.type == 'WINDOW':
+                                    override = {
+                                        'window': window,
+                                        'screen': window.screen,
+                                        'area': area,
+                                        'region': region,
+                                        'space_data': area.spaces.active,
+                                        'edit_text': text
+                                    }
+                                    break
+                            if override:
+                                break
+                    if override:
+                        break
+                
+                # If we found a text editor, use it to execute
+                if override:
+                    # Set as active text
+                    override['space_data'].text = text
+                    # Use the override context to run the script
+                    bpy.ops.text.run_script(override)
+                    return f"Text block '{name}' executed with override context"
+                else:
+                    # Fallback method: execute the code directly
+                    try:
+                        namespace = {'__file__': name}
+                        exec(compile(text.as_string(), name, 'exec'), namespace)
+                        return f"Text block '{name}' executed directly with exec()"
+                    except Exception as exec_error:
+                        return f"Error executing text block '{name}': {str(exec_error)}"
+                    
+            except Exception as e:
+                error_msg = traceback.format_exc()
+                return f"Error executing text block: {error_msg}"
+        
+        return _execute_text_block
+    
+    @staticmethod
     def render_scene(params=None):
         """Render the current scene and save to file"""
         params = params or {}
@@ -77,6 +224,36 @@ class CommandExecutor:
             return f"Scene rendered to {filepath}"
         
         return _render_scene
+
+
+class SOCKET_OT_RunReceivedScript(bpy.types.Operator):
+    bl_idname = "socket.run_received_script"
+    bl_label = "Run Received Script"
+    bl_description = "Run the currently active script from the socket receiver"
+    
+    @classmethod
+    def poll(cls, context):
+        return context.space_data and context.space_data.type == 'TEXT_EDITOR' and context.space_data.text
+    
+    def execute(self, context):
+        try:
+            text = context.space_data.text
+            
+            # Ensure the text is saved (if modified)
+            if text.is_modified:
+                text.write(text.as_string())
+            
+            # Execute the script
+            namespace = {'__file__': text.name}
+            exec(compile(text.as_string(), text.name, 'exec'), namespace)
+            
+            self.report({'INFO'}, f"Script '{text.name}' executed successfully")
+            return {'FINISHED'}
+        except Exception as e:
+            error_msg = str(e)
+            self.report({'ERROR'}, f"Error executing script: {error_msg}")
+            print(f"Error executing script: {traceback.format_exc()}")
+            return {'CANCELLED'}
 
 
 class SocketReceiver(bpy.types.Operator):
@@ -181,18 +358,26 @@ class SocketReceiver(bpy.types.Operator):
     def handle_connection(self, conn):
         """Handle a single connection"""
         try:
+            # Use a larger buffer size for larger commands
+            buffer_size = 8192
+            data = b''
+            
             while self._running:
-                try:
-                    data = conn.recv(4096)
-                    if not data:
-                        break
-                    
-                    message = data.decode('utf-8')
-                    self._messages.append(message)
-                except Exception as e:
-                    print(f"Error receiving data: {e}")
+                chunk = conn.recv(buffer_size)
+                if not chunk:
+                    # Connection closed by client
                     break
-                    
+                
+                data += chunk
+                
+                # If we have less than buffer_size, we probably have all the data
+                if len(chunk) < buffer_size:
+                    break
+            
+            if data:
+                message = data.decode('utf-8')
+                self._messages.append(message)
+                
             conn.close()
             
         except Exception as e:
@@ -218,7 +403,12 @@ class SocketReceiver(bpy.types.Operator):
             cmd_name = cmd_data.get("command", "")
             params = cmd_data.get("params", {})
             
-            # get the command function
+            # Get metadata
+            timestamp = cmd_data.get("timestamp", "unknown time")
+            user = cmd_data.get("user", "unknown user")
+            print(f"Command '{cmd_name}' received from {user} at {timestamp}")
+            
+            # Get the appropriate command function
             cmd_func = self.get_command_function(cmd_name, params)
             if cmd_func:
                 # queue the command for execution (in main thread)
@@ -240,6 +430,8 @@ class SocketReceiver(bpy.types.Operator):
             "create_sphere": CommandExecutor.create_sphere,
             "delete_all": CommandExecutor.delete_all,
             "execute_code": CommandExecutor.execute_code,
+            "create_text_block": CommandExecutor.create_text_block,
+            "execute_text_block": CommandExecutor.execute_text_block,
             "render_scene": CommandExecutor.render_scene,
         }
         
@@ -250,7 +442,7 @@ class SocketReceiver(bpy.types.Operator):
         return None
 
 
-# panel to start/stop the receiver
+# Panel to start/stop the receiver
 class SocketCommandPanel(bpy.types.Panel):
     bl_label = "Socket Command Receiver"
     bl_idname = "VIEW3D_PT_socket_command"
@@ -262,15 +454,22 @@ class SocketCommandPanel(bpy.types.Panel):
         layout = self.layout
         row = layout.row()
         row.operator("wm.socket_command_receiver", text="Start Command Receiver")
+        
+        # Add a button to execute the current script
+        if context.space_data and context.space_data.type == 'TEXT_EDITOR' and context.space_data.text:
+            row = layout.row()
+            row.operator("socket.run_received_script", text="Run Current Script")
 
 
 # register and unregister functions
 def register():
     bpy.utils.register_class(SocketReceiver)
+    bpy.utils.register_class(SOCKET_OT_RunReceivedScript)
     bpy.utils.register_class(SocketCommandPanel)
 
 def unregister():
     bpy.utils.unregister_class(SocketCommandPanel)
+    bpy.utils.unregister_class(SOCKET_OT_RunReceivedScript)
     bpy.utils.unregister_class(SocketReceiver)
 
 if __name__ == "__main__":
